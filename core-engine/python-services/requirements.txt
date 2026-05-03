@@ -1,0 +1,31 @@
+# Darcie Python Bridge Services — Dependencies
+# Install: pip install -r requirements.txt
+
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# HTTP client (for calling ComfyUI, Presenton, Groq)
+httpx>=0.27.0
+
+# Env loading
+python-dotenv>=1.0.0
+
+# Data validation
+pydantic>=2.0.0
+
+# File serving
+python-multipart>=0.0.9
+
+# Database (Supabase Postgres)
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.0
+
+# crawl4ai deps (installed separately from crawl4ai/ repo)
+# Run: cd crawl4ai && pip install -e ".[all]"
+
+# graphrag deps (installed separately from graphrag/ repo)
+# Run: cd graphrag && pip install -e .
+
+# ppt-master deps (installed separately)
+# Run: cd ppt-master && pip install -r requirements.txt
