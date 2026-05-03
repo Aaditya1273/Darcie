@@ -1,105 +1,131 @@
-import { generateObject } from 'ai';
-import { createOpenAI } from '@ai-sdk/openai';
-import { z } from 'zod';
-import { ChatMemory } from '../memory/chat_memory';
+/**
+ * Planner — converts user query into a typed task plan
+ *
+ * Primary:  Groq Llama 3.3 70B  (fast structured output)
+ * Fallback: Google Gemini 1.5 Flash
+ * Final:    LLM7 Llama 3.3 70B  (free)
+ *
+ * Memory context from Supabase pgvector is injected into the prompt
+ * so the planner knows the user's past preferences and style.
+ */
 
-// Production-grade Groq configuration (Llama 3.1 70B)
-// Groq is chosen for its extreme speed and reliable OpenAI compatibility.
+import { generateObject } from 'ai'
+import { createOpenAI } from '@ai-sdk/openai'
+import { z } from 'zod'
+import { ChatMemory } from '../memory/chat_memory'
+
 const groq = createOpenAI({
   baseURL: 'https://api.groq.com/openai/v1',
   apiKey: process.env.GROQ_API_KEY,
-  compatibility: 'strict', 
-});
+  compatibility: 'strict',
+})
 
 const llm7 = createOpenAI({
   baseURL: process.env.LLM7_BASE_URL || 'https://api.llm7.io/v1',
   apiKey: process.env.LLM7_API_KEY,
-  compatibility: 'strict',
-});
+  compatibility: 'compatible',
+})
 
-const TaskSchema = z.object({
-  type: z.enum(['search', 'ppt', 'image', 'hybrid', 'research', 'deep_research', 'presenton_report', 'generate_image']),
+// ── Schemas ───────────────────────────────────────────────────────
+export const TaskSchema = z.object({
+  type: z.enum([
+    'search',        // crawl4ai web search
+    'deep_research', // searach (Perplexica) multi-step research
+    'research',      // GraphRAG knowledge graph query
+    'hybrid',        // GraphRAG + search combined
+    'ppt',           // ppt-master PPTX generation
+    'presenton_report', // Presenton styled presentation
+    'generate_image',   // ComfyUI image generation
+    'image',            // alias for generate_image
+  ]),
   query: z.string().describe('The specific query or prompt for this task'),
-  styleContext: z.string().optional().describe('Any specific style guidelines to apply to this task'),
-});
+  styleContext: z.string().optional().describe('Style/formatting preferences from user memory'),
+})
 
-const PlanSchema = z.object({
-  intent: z.string().describe('The detected intent of the user'),
-  tasks: z.array(TaskSchema).describe('The sequence of tasks to execute'),
-});
+export const PlanSchema = z.object({
+  intent: z.string().describe('One sentence describing what the user wants'),
+  tasks: z.array(TaskSchema).min(1).describe('Ordered list of tasks to execute'),
+})
 
-export type Task = z.infer<typeof TaskSchema>;
-export type Plan = z.infer<typeof PlanSchema>;
+export type Task = z.infer<typeof TaskSchema>
+export type Plan = z.infer<typeof PlanSchema>
 
+// ── Planner class ─────────────────────────────────────────────────
 export class Planner {
-  private chatMemory: ChatMemory;
+  private memory: ChatMemory
 
-  constructor(userId: string = "default_user") {
-    this.chatMemory = new ChatMemory(userId);
+  constructor(userId: string = 'default_user') {
+    this.memory = new ChatMemory(userId)
   }
 
   async plan(query: string): Promise<Plan> {
-    let userStyleContext = "";
+    // Load user memory context (non-blocking — fails silently)
+    let memoryContext = ''
     try {
-       userStyleContext = await this.chatMemory.getContext(query);
-    } catch (e) {
-       console.warn("[Planner] Memory subsystem offline.");
+      memoryContext = await this.memory.getContext(query)
+    } catch {
+      console.warn('[Planner] Memory offline')
     }
 
+    const prompt = `
+You are the Brain of Darcie, an AI workspace that can search, research, generate images, and create presentations.
+
+Available task types:
+- "search"           → Fast web search + crawl (use for factual questions, current events, data gathering)
+- "deep_research"    → Multi-step web research via Perplexica (use for complex topics needing synthesis)
+- "research"         → Knowledge graph query via GraphRAG (use when user has indexed their own documents)
+- "ppt"              → Generate a downloadable PowerPoint file via ppt-master
+- "presenton_report" → Generate a styled AI presentation via Presenton
+- "generate_image"   → Generate an image via ComfyUI
+
+User query: "${query}"
+${memoryContext ? `\nUser's past preferences:\n${memoryContext}` : ''}
+
+Planning rules:
+1. For "make a PPT about X" → plan: [search(X), ppt(X)] — search first to get real data
+2. For "make a presentation about X" → plan: [search(X), presenton_report(X)]
+3. For "generate image of X" → plan: [generate_image(X)]
+4. For "research X deeply" → plan: [deep_research(X)]
+5. For simple questions → plan: [search(question)]
+6. For "what is X" / "explain X" → plan: [search(X)]
+7. Never add unnecessary tasks. Keep plans minimal and focused.
+8. Pass styleContext from user memory into ppt/presenton tasks.
+
+Generate the execution plan now:`.trim()
+
+    // Tier 1: Groq
     try {
-      // Primary Brain: Groq Llama 3.3 70B (Latest Flagship)
       const { object } = await generateObject({
-        model: groq('llama-3.3-70b-versatile', {
-           structuredOutputs: false, 
-        }),
+        model: groq('llama-3.3-70b-versatile', { structuredOutputs: false }),
         schema: PlanSchema,
-        prompt: `
-You are the Brain of Darcie, an elite 'Input -> Thinking -> Output' engine.
-Your job is to analyze the user's query and generate a precise execution plan.
-
-Available Tools:
-- search: Fast web search for answering questions.
-- deep_research: Multi-step profound research using Perplexica.
-- research: Deep context extraction using knowledge graphs (GraphRAG).
-- ppt: Generating a PowerPoint presentation.
-- presenton_report: Generate a professional, highly-styled research document (Presenton).
-- generate_image: Generate visual assets (ComfyUI).
-
-User Query: "${query}"
-User Memory Context: "${userStyleContext}"
-
-Rules:
-1. Deconstruct the user query into a sequence of necessary tasks.
-2. If they ask for a PPT, you likely need a 'search' task first to get data, then a 'ppt' task to format it.
-3. Pass the relevant User Style Memory context directly into the tasks that require formatting.
-        `,
-      });
-
-      return object;
-    } catch (error) {
-      console.error("[Planner] Groq failed. Executing Tier-2 failover to Gemini...", error);
-      
-      try {
-        const { google } = await import('@ai-sdk/google');
-        const { generateObject: go } = await import('ai');
-        
-        const { object } = await go({
-          model: google('gemini-1.5-flash-latest'),
-          schema: PlanSchema,
-          prompt: `Analyze the following query and break it into a sequence of tasks: "${query}"`,
-        });
-        return object;
-      } catch (fallbackError) {
-        console.error("[Planner] Gemini failed. Executing Tier-3 Ultimate failover to LLM7...", fallbackError);
-        
-        const { generateObject: go } = await import('ai');
-        const { object } = await go({
-          model: llm7('llama-3.3-70b-instruct'),
-          schema: PlanSchema,
-          prompt: `Analyze the following query and break it into a sequence of tasks: "${query}"`,
-        });
-        return object;
-      }
+        prompt,
+      })
+      return object
+    } catch (e) {
+      console.warn('[Planner] Groq failed, trying Gemini...', e)
     }
+
+    // Tier 2: Gemini Flash
+    try {
+      const { google } = await import('@ai-sdk/google')
+      const { generateObject: go } = await import('ai')
+      const { object } = await go({
+        model: google('gemini-1.5-flash-latest'),
+        schema: PlanSchema,
+        prompt,
+      })
+      return object
+    } catch (e) {
+      console.warn('[Planner] Gemini failed, trying LLM7...', e)
+    }
+
+    // Tier 3: LLM7 (always free)
+    const { generateObject: go } = await import('ai')
+    const { object } = await go({
+      model: llm7('llama-3.3-70b-instruct'),
+      schema: PlanSchema,
+      prompt,
+    })
+    return object
   }
 }

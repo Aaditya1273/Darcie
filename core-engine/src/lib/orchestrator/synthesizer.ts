@@ -1,38 +1,81 @@
-import { generateText } from 'ai';
-import { createOpenAI } from '@ai-sdk/openai';
+/**
+ * Synthesizer — combines all agent results into a final response
+ *
+ * Primary:  Groq Llama 3.3 70B (fast, free tier)
+ * Fallback: Google Gemini 1.5 Flash
+ * Final:    LLM7 Llama 3.3 70B (free)
+ */
+
+import { generateText } from 'ai'
+import { createOpenAI } from '@ai-sdk/openai'
 
 const groq = createOpenAI({
   baseURL: 'https://api.groq.com/openai/v1',
   apiKey: process.env.GROQ_API_KEY,
   compatibility: 'strict',
-});
+})
+
+const llm7 = createOpenAI({
+  baseURL: process.env.LLM7_BASE_URL || 'https://api.llm7.io/v1',
+  apiKey: process.env.LLM7_API_KEY,
+  compatibility: 'compatible',
+})
+
+const SYSTEM_PROMPT = `You are the Output Synthesizer for Darcie AI.
+Your job is to combine raw agent results into a single, clean, professional response.
+
+Rules:
+- ONLY use information from the provided results. Never hallucinate.
+- If a result contains a download link or image URL, display it prominently as a markdown link/image.
+- Use clean markdown: headers (##), bullet points, bold for key terms.
+- If multiple results cover the same topic, merge them — don't repeat.
+- If a result says an agent failed, acknowledge it briefly and move on.
+- Keep the response focused and useful. No filler phrases.`
 
 export class Synthesizer {
-  /**
-   * Aggregates tool outputs and synthesizes a final response.
-   * @param query The original user query.
-   * @param results The raw string outputs from various agents.
-   * @returns A final Markdown-formatted string.
-   */
   async synthesize(query: string, results: string[]): Promise<string> {
-    const combinedResults = results.map((r, i) => `--- Result ${i + 1} ---\n${r}`).join("\n\n");
+    const combinedResults = results
+      .map((r, i) => `--- Agent Result ${i + 1} ---\n${r}`)
+      .join('\n\n')
 
-    const { text } = await generateText({
-      model: groq('llama-3.3-70b-versatile'),
-      prompt: `
-You are the Output Synthesizer for Darcie.
-The user asked: "${query}"
+    const prompt = `User asked: "${query}"\n\nAgent Results:\n${combinedResults}\n\nSynthesize a final response:`
 
-Here are the raw results from the execution agents:
-${combinedResults}
+    // Tier 1: Groq
+    try {
+      const { text } = await generateText({
+        model: groq('llama-3.3-70b-versatile'),
+        system: SYSTEM_PROMPT,
+        prompt,
+        maxTokens: 2048,
+      })
+      return text
+    } catch (e) {
+      console.warn('[Synthesizer] Groq failed, trying Gemini...', e)
+    }
 
-Your job is to synthesize these results into a beautiful, highly readable, and professional response.
-- Do NOT hallucinate. Only use the provided results.
-- If a result is a URL to a generated PPT or Image, prominently display it as a markdown link or image tag.
-- Use clean formatting (H2, H3, bullet points). Do not clutter the output.
-      `
-    });
+    // Tier 2: Gemini Flash
+    try {
+      const { google } = await import('@ai-sdk/google')
+      const { generateText: gt } = await import('ai')
+      const { text } = await gt({
+        model: google('gemini-1.5-flash-latest'),
+        system: SYSTEM_PROMPT,
+        prompt,
+        maxTokens: 2048,
+      })
+      return text
+    } catch (e) {
+      console.warn('[Synthesizer] Gemini failed, trying LLM7...', e)
+    }
 
-    return text;
+    // Tier 3: LLM7 (always free)
+    const { generateText: gt } = await import('ai')
+    const { text } = await gt({
+      model: llm7('llama-3.3-70b-instruct'),
+      system: SYSTEM_PROMPT,
+      prompt,
+      maxTokens: 2048,
+    })
+    return text
   }
 }
