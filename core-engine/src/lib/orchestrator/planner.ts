@@ -17,13 +17,11 @@ import { ChatMemory } from '../memory/chat_memory'
 const groq = createOpenAI({
   baseURL: 'https://api.groq.com/openai/v1',
   apiKey: process.env.GROQ_API_KEY,
-  compatibility: 'strict',
 })
 
 const llm7 = createOpenAI({
   baseURL: process.env.LLM7_BASE_URL || 'https://api.llm7.io/v1',
   apiKey: process.env.LLM7_API_KEY,
-  compatibility: 'compatible',
 })
 
 // ── Schemas ───────────────────────────────────────────────────────
@@ -96,7 +94,7 @@ Generate the execution plan now:`.trim()
     // Tier 1: Groq
     try {
       const { object } = await generateObject({
-        model: groq('llama-3.3-70b-versatile', { structuredOutputs: false }),
+        model: groq('llama-3.3-70b-versatile'),
         schema: PlanSchema,
         prompt,
       })

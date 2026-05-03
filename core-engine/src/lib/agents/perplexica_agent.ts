@@ -1,107 +1,97 @@
 /**
- * PerplexicaAgent — calls the searach (Perplexica fork) deep search API
+ * PerplexicaAgent — calls searach (Perplexica fork) on port 3001
  *
- * searach runs on port 3001 and exposes POST /api/chat
- * Its API requires: message, chatModel, embeddingModel, optimizationMode
+ * searach /api/chat requires:
+ *   message: { messageId, chatId, content }
+ *   chatModel: { providerId, key }      ← must match a configured provider in searach
+ *   embeddingModel: { providerId, key } ← must match a configured provider in searach
+ *   optimizationMode: 'speed' | 'balanced' | 'quality'
+ *   sources: string[]
+ *   history: []
  *
- * We use the configured LLM providers from env.
- * Response is a NDJSON stream — we collect all blocks and return the final text.
+ * Response: NDJSON stream of { type, block/patch } objects
  */
 
 const SEARACH_URL = process.env.SEARACH_URL || 'http://127.0.0.1:3001'
 
-// Default models — use whatever is configured in searach
-const DEFAULT_CHAT_MODEL = {
+// These must match provider IDs configured in searach's config
+// searach uses its own config system — set these to match what you've configured there
+const CHAT_MODEL = {
   providerId: process.env.SEARACH_PROVIDER_ID || 'groq',
   key: process.env.SEARACH_MODEL_KEY || 'llama-3.3-70b-versatile',
 }
-
-const DEFAULT_EMBEDDING_MODEL = {
+const EMBED_MODEL = {
   providerId: process.env.SEARACH_EMBED_PROVIDER_ID || 'openai',
   key: process.env.SEARACH_EMBED_KEY || 'text-embedding-3-small',
 }
 
 export class PerplexicaAgent {
-  /**
-   * Calls searach's /api/chat endpoint.
-   * searach streams NDJSON blocks — we collect them and return the final answer text.
-   */
-  async execute(query: string, focusMode: string = 'webSearch'): Promise<string> {
+  async execute(query: string): Promise<string> {
     console.log(`[PerplexicaAgent] Deep research: ${query}`)
-
-    const messageId = crypto.randomUUID()
-    const chatId = crypto.randomUUID()
 
     const body = {
       message: {
-        messageId,
-        chatId,
+        messageId: crypto.randomUUID(),
+        chatId: crypto.randomUUID(),
         content: query,
       },
-      optimizationMode: 'balanced',
-      sources: [focusMode],
+      optimizationMode: 'balanced' as const,
+      sources: ['webSearch'],
       history: [],
       files: [],
-      chatModel: DEFAULT_CHAT_MODEL,
-      embeddingModel: DEFAULT_EMBEDDING_MODEL,
-      systemInstructions: '',
+      chatModel: CHAT_MODEL,
+      embeddingModel: EMBED_MODEL,
+      systemInstructions: 'Be thorough, cite sources, and provide a comprehensive answer.',
     }
 
-    try {
-      const res = await fetch(`${SEARACH_URL}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(120_000), // 2 min timeout
-      })
+    const res = await fetch(`${SEARACH_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    })
 
-      if (!res.ok) {
-        throw new Error(`searach /api/chat returned ${res.status}: ${await res.text()}`)
-      }
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '')
+      throw new Error(`searach returned ${res.status}: ${errText.slice(0, 200)}`)
+    }
 
-      // searach streams NDJSON — each line is a JSON object
-      const text = await res.text()
-      const lines = text.split('\n').filter((l) => l.trim())
+    // Parse NDJSON stream
+    const raw = await res.text()
+    const lines = raw.split('\n').filter(l => l.trim())
 
-      let finalAnswer = ''
-      const sources: string[] = []
+    let answer = ''
+    const sources: string[] = []
 
-      for (const line of lines) {
-        try {
-          const event = JSON.parse(line)
-
-          if (event.type === 'block' && event.block?.type === 'text') {
-            finalAnswer += event.block.content ?? ''
-          }
-
-          if (event.type === 'updateBlock' && event.patch) {
-            // Patch may contain text delta
-            const val = event.patch?.value ?? ''
-            if (typeof val === 'string') finalAnswer += val
-          }
-
-          if (event.type === 'block' && event.block?.type === 'sources') {
-            const srcs = event.block?.sources ?? []
-            for (const s of srcs) {
-              if (s.url) sources.push(`- [${s.title || s.url}](${s.url})`)
-            }
-          }
-        } catch {
-          // Skip malformed lines
+    for (const line of lines) {
+      try {
+        const ev = JSON.parse(line)
+        // Text blocks
+        if (ev.type === 'block' && ev.block?.type === 'text') {
+          answer += ev.block.content ?? ''
         }
-      }
-
-      if (!finalAnswer) {
-        throw new Error('searach returned no text content')
-      }
-
-      const sourcesSection =
-        sources.length > 0 ? `\n\n**Sources:**\n${sources.slice(0, 5).join('\n')}` : ''
-
-      return `[Deep Research]\n${finalAnswer}${sourcesSection}`
-    } catch (error) {
-      console.error('[PerplexicaAgent] Failed:', error)
-      throw error
+        // Streaming text patches
+        if (ev.type === 'updateBlock') {
+          const v = ev.patch?.value ?? ev.patch?.content ?? ''
+          if (typeof v === 'string') answer += v
+        }
+        // Source blocks
+        if (ev.type === 'block' && ev.block?.type === 'sources') {
+          for (const s of ev.block.sources ?? []) {
+            if (s.url) sources.push(`- [${s.title || s.url}](${s.url})`)
+          }
+        }
+      } catch { /* skip malformed lines */ }
     }
+
+    if (!answer.trim()) {
+      throw new Error('searach returned empty response. Check that searach is running and providers are configured.')
+    }
+
+    const srcSection = sources.length > 0
+      ? `\n\n**Sources:**\n${sources.slice(0, 6).join('\n')}`
+      : ''
+
+    return `### Deep Research\n\n${answer.trim()}${srcSection}`
   }
 }

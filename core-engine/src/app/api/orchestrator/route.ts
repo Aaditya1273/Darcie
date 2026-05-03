@@ -21,7 +21,8 @@ import { PerplexicaAgent } from '@/lib/agents/perplexica_agent'
 import { PresentonAgent } from '@/lib/agents/presenton_agent'
 import { ImageAgent } from '@/lib/agents/image_agent'
 import { ChatMemory } from '@/lib/memory/chat_memory'
-import { supabase } from '@/lib/db/supabase'
+import { getSql } from '@/lib/db/supabase'
+import { getSession } from '@/lib/auth/session'
 import type { Task } from '@/lib/orchestrator/planner'
 
 // ── SSE helpers ───────────────────────────────────────────────────
@@ -78,29 +79,18 @@ async function persistConversation(
   plan: Task[]
 ): Promise<void> {
   try {
-    // Upsert conversation
-    await supabase.from('conversations').upsert({
-      id: conversationId,
-      user_id: userId,
-      title: query.slice(0, 80),
-      updated_at: new Date().toISOString(),
-    })
-
-    // Insert both messages
-    await supabase.from('messages').insert([
-      {
-        conversation_id: conversationId,
-        role: 'user',
-        content: query,
-        metadata: {},
-      },
-      {
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: response,
-        metadata: { plan },
-      },
-    ])
+    const sql = getSql()
+    await sql`
+      INSERT INTO conversations (id, user_id, title, updated_at)
+      VALUES (${conversationId}, ${userId}, ${query.slice(0, 80)}, NOW())
+      ON CONFLICT (id) DO UPDATE SET updated_at = NOW()
+    `
+    await sql`
+      INSERT INTO messages (conversation_id, role, content, metadata)
+      VALUES
+        (${conversationId}, 'user',      ${query},    '{}'::jsonb),
+        (${conversationId}, 'assistant', ${response}, ${JSON.stringify({ plan })}::jsonb)
+    `
   } catch (e) {
     console.warn('[Orchestrator] Failed to persist conversation:', e)
   }
@@ -109,7 +99,7 @@ async function persistConversation(
 // ── Main route ────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const body = await req.json()
-  const { query, userId = 'default_user', conversationId } = body
+  const { query, conversationId } = body
 
   if (!query?.trim()) {
     return new Response(
@@ -118,8 +108,30 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Generate a conversation ID if not provided
+  // Resolve userId — real session if logged in, guest fallback
+  const session = await getSession()
+  const userId = session?.id ?? `guest_${req.headers.get('x-forwarded-for') ?? 'anon'}`
   const convId = conversationId || crypto.randomUUID()
+
+  // ── Rate limiting (60 requests/hour per user) ─────────────────
+  try {
+    const sql = getSql()
+    const oneHourAgo = new Date(Date.now() - 3600_000).toISOString()
+    const usage = await sql<{ count: string }[]>`
+      SELECT COUNT(*) as count FROM api_usage
+      WHERE user_id = ${userId} AND endpoint = 'orchestrator' AND created_at > ${oneHourAgo}
+    `
+    const count = parseInt(usage[0]?.count ?? '0')
+    const limit = session ? 60 : 10 // logged-in: 60/hr, guest: 10/hr
+    if (count >= limit) {
+      return new Response(
+        JSON.stringify({ error: `Rate limit exceeded. ${session ? '60' : '10'} requests/hour allowed.` }),
+        { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '3600' } }
+      )
+    }
+    // Log this request (fire and forget)
+    sql`INSERT INTO api_usage (user_id, endpoint) VALUES (${userId}, 'orchestrator')`.catch(() => {})
+  } catch { /* never block on rate limit errors */ }
 
   // ── SSE Stream ────────────────────────────────────────────────
   const stream = new ReadableStream({

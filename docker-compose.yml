@@ -1,0 +1,196 @@
+version: '3.9'
+
+# ══════════════════════════════════════════════════════════════════
+# Darcie AI Workspace — Docker Compose
+# Usage: docker compose up --build
+# Requires: .env file at repo root (copy from .env.example)
+# ══════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── Core Engine (Next.js Orchestrator) ───────────────────────────
+  core-engine:
+    build:
+      context: ./core-engine
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file: ./core-engine/.env.local
+    environment:
+      - NODE_ENV=production
+      - CRAWLER_URL=http://crawler-api:8001
+      - PPT_URL=http://ppt-api:8002
+      - GRAPHRAG_URL=http://graphrag-api:8003
+      - PRESENTON_BRIDGE_URL=http://presenton-bridge:8005
+      - IMAGE_URL=http://image-api:8006
+      - SEARACH_URL=http://searach:3000
+      - COMFYUI_URL=http://comfyui:8188
+      - PRESENTON_URL=http://presenton:7860
+      - SEARXNG_URL=http://searxng:8080
+    depends_on:
+      - crawler-api
+      - ppt-api
+      - graphrag-api
+      - presenton-bridge
+      - image-api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/auth/me"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Python Bridge: Crawler (crawl4ai) ────────────────────────────
+  crawler-api:
+    build:
+      context: .
+      dockerfile: core-engine/python-services/Dockerfile
+    command: uvicorn crawler_api:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    env_file: ./core-engine/python-services/.env
+    volumes:
+      - ./crawl4ai:/app/crawl4ai:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Python Bridge: PPT (ppt-master) ──────────────────────────────
+  ppt-api:
+    build:
+      context: .
+      dockerfile: core-engine/python-services/Dockerfile
+    command: uvicorn ppt_api:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    env_file: ./core-engine/python-services/.env
+    volumes:
+      - ./ppt-master:/app/ppt-master:ro
+      - ppt_projects:/app/ppt-master/skills/ppt-master/projects
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Python Bridge: GraphRAG ───────────────────────────────────────
+  graphrag-api:
+    build:
+      context: .
+      dockerfile: core-engine/python-services/Dockerfile
+    command: uvicorn graphrag_api:app --host 0.0.0.0 --port 8003
+    ports:
+      - "8003:8003"
+    env_file: ./core-engine/python-services/.env
+    volumes:
+      - ./graphrag:/app/graphrag:ro
+      - graphrag_index:/app/graphrag/ragindex
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Python Bridge: Presenton ──────────────────────────────────────
+  presenton-bridge:
+    build:
+      context: .
+      dockerfile: core-engine/python-services/Dockerfile
+    command: uvicorn presenton_api:app --host 0.0.0.0 --port 8005
+    ports:
+      - "8005:8005"
+    env_file: ./core-engine/python-services/.env
+    restart: unless-stopped
+    depends_on:
+      - presenton
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Python Bridge: Image (ComfyUI) ────────────────────────────────
+  image-api:
+    build:
+      context: .
+      dockerfile: core-engine/python-services/Dockerfile
+    command: uvicorn image_api:app --host 0.0.0.0 --port 8006
+    ports:
+      - "8006:8006"
+    env_file: ./core-engine/python-services/.env
+    environment:
+      - COMFYUI_URL=http://comfyui:8188
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Presenton FastAPI ─────────────────────────────────────────────
+  presenton:
+    build:
+      context: ./presenton
+      dockerfile: Dockerfile
+    ports:
+      - "7860:7860"
+    env_file: ./presenton/servers/fastapi/.env
+    volumes:
+      - presenton_data:/app/data
+    restart: unless-stopped
+
+  # ── searach (Perplexica fork — deep search) ───────────────────────
+  searach:
+    build:
+      context: ./searach
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3000"
+    env_file: ./searach/.env.local
+    environment:
+      - SEARXNG_API_URL=http://searxng:8080
+    depends_on:
+      - searxng
+    restart: unless-stopped
+
+  # ── SearXNG (meta search engine — no API key needed) ─────────────
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searach/searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080
+    restart: unless-stopped
+
+  # ── ComfyUI (image generation) ────────────────────────────────────
+  # NOTE: Requires NVIDIA GPU. Comment out if no GPU available.
+  # comfyui:
+  #   build:
+  #     context: ./ComfyUI
+  #   ports:
+  #     - "8188:8188"
+  #   volumes:
+  #     - comfyui_models:/app/models
+  #     - comfyui_output:/app/output
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   restart: unless-stopped
+
+volumes:
+  ppt_projects:
+  graphrag_index:
+  presenton_data:
+  # comfyui_models:
+  # comfyui_output:

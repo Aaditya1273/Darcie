@@ -1,60 +1,29 @@
-import { Memory } from "mem0ai";
-
-// Initialize Mem0 for native TS memory management
-const memory = new Memory({
-  config: {
-    // We are going to use an in-memory or lightweight vector store for now
-    // In production, configure Qdrant/Pinecone here as per mem0ai docs
-    version: "v1.1"
-  }
-});
-
-export interface StyleContext {
-  colors: string;
-  font: string;
-  tone: string;
-  preferences: string;
-}
+import { getSql } from '../db/supabase'
 
 export class StyleMemory {
-  private userId: string;
+  private userId: string
+  constructor(userId = 'default_user') { this.userId = userId }
 
-  constructor(userId: string = "default_user") {
-    this.userId = userId;
-  }
-
-  /**
-   * Adds the user's style preference based on their query or manual input.
-   */
-  async addPreference(preferenceText: string): Promise<void> {
-    await memory.add(
-      [{ role: "user", content: `I prefer my outputs formatted like this: ${preferenceText}` }],
-      { user_id: this.userId }
-    );
-  }
-
-  /**
-   * Retrieves the combined style and formatting preferences for the user.
-   */
-  async getPreferencesContext(query: string): Promise<string> {
+  async addPreference(text: string): Promise<void> {
     try {
-      const relevantMemories = await memory.search(query, {
-        user_id: this.userId,
-        limit: 5,
-      });
-      
-      if (!relevantMemories || relevantMemories.length === 0) {
-        return "No specific style preferences found. Use default professional tone and clean layout.";
-      }
+      const sql = getSql()
+      await sql`
+        INSERT INTO memories (user_id, content, metadata)
+        VALUES (${this.userId}, ${'Style preference: ' + text}, '{"type":"style"}'::jsonb)
+      `
+    } catch (e) { console.warn('[StyleMemory] save failed:', e) }
+  }
 
-      const memoriesStr = relevantMemories
-        .map((m: any) => `- ${m.memory}`)
-        .join("\n");
-
-      return `User Style Preferences:\n${memoriesStr}`;
-    } catch (e) {
-      console.warn("Failed to retrieve style memory:", e);
-      return "Default style.";
-    }
+  async getPreferencesContext(): Promise<string> {
+    try {
+      const sql = getSql()
+      const rows = await sql<{ content: string }[]>`
+        SELECT content FROM memories
+        WHERE user_id = ${this.userId}
+          AND metadata->>'type' = 'style'
+        ORDER BY created_at DESC LIMIT 5
+      `
+      return rows.length ? rows.map(r => r.content).join('\n') : 'Default professional style.'
+    } catch { return 'Default professional style.' }
   }
 }

@@ -12,13 +12,11 @@ import { createOpenAI } from '@ai-sdk/openai'
 const groq = createOpenAI({
   baseURL: 'https://api.groq.com/openai/v1',
   apiKey: process.env.GROQ_API_KEY,
-  compatibility: 'strict',
 })
 
 const llm7 = createOpenAI({
   baseURL: process.env.LLM7_BASE_URL || 'https://api.llm7.io/v1',
   apiKey: process.env.LLM7_API_KEY,
-  compatibility: 'compatible',
 })
 
 const SYSTEM_PROMPT = `You are the Output Synthesizer for Darcie AI.
@@ -46,7 +44,6 @@ export class Synthesizer {
         model: groq('llama-3.3-70b-versatile'),
         system: SYSTEM_PROMPT,
         prompt,
-        maxTokens: 2048,
       })
       return text
     } catch (e) {
@@ -61,7 +58,6 @@ export class Synthesizer {
         model: google('gemini-1.5-flash-latest'),
         system: SYSTEM_PROMPT,
         prompt,
-        maxTokens: 2048,
       })
       return text
     } catch (e) {
@@ -74,7 +70,6 @@ export class Synthesizer {
       model: llm7('llama-3.3-70b-instruct'),
       system: SYSTEM_PROMPT,
       prompt,
-      maxTokens: 2048,
     })
     return text
   }
