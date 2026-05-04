@@ -31,6 +31,17 @@ echo "  🧠 Darcie AI Workspace — Starting Up"
 echo "══════════════════════════════════════════════"
 echo ""
 
+# ── Kill any existing processes on our ports ──────────────────────
+info "Clearing ports 8001-8006..."
+for PORT in 8001 8002 8003 8005 8006; do
+  PID=$(lsof -ti tcp:$PORT 2>/dev/null || true)
+  if [ -n "$PID" ]; then
+    kill -9 $PID 2>/dev/null || true
+    info "  Killed existing process on port $PORT (PID $PID)"
+  fi
+done
+sleep 0.5
+
 # ── Python venv ───────────────────────────────────────────────────
 if [ -d "$BASE_DIR/venv-darcie" ]; then
   info "Activating Python venv..."
@@ -76,7 +87,7 @@ echo ""
 warn "External services (start these manually if not running):"
 warn "  ComfyUI:   cd $REPO_ROOT/ComfyUI && python main.py --port 8188"
 warn "  Presenton: cd $REPO_ROOT/presenton/servers/fastapi && python server.py --port 7860"
-warn "  searach:   cd $REPO_ROOT/searach && yarn dev --port 3001"
+warn "  searach:   cd $REPO_ROOT/searach && npm run dev -- --port 3001"
 warn "  SearXNG:   docker run -p 8080:8080 searxng/searxng"
 echo ""
 

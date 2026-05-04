@@ -64,7 +64,7 @@ function buildSlideHTML(slide: { title: string; content: string; type: string; b
 
 async function generateSlides(content: string, style: SlideStyle = 'professional', slideCount = 6) {
   const { object } = await generateObject({
-    model: google('gemini-1.5-flash-latest'),
+    model: google('gemini-2.0-flash'),
     schema: slideSchema,
     prompt: `Create a ${slideCount}-slide presentation from this content. Use 'title' for slide 1, 'bullet' for key-point slides, 'content' for detail slides.
 
@@ -145,7 +145,7 @@ Rules:
 
     // Generate response
     const { text } = await generateText({
-      model: google('gemini-1.5-flash-latest'),
+      model: google('gemini-2.0-flash'),
       system: systemPrompt,
       messages,
       tools: hasTools ? tools : undefined,
