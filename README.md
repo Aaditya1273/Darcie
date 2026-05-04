@@ -1,5 +1,8 @@
 # Darcie AI Workspace
 
+<img width="1908" height="947" alt="image" src="https://github.com/user-attachments/assets/d8ddb012-433e-43bb-8192-162691f7d084" />
+
+
 A production-grade AI platform that combines web search, deep research, image generation, presentation creation, and persistent memory — all from a single chat interface.
 
 Built by assembling the best open-source AI tools and wiring them together with a central orchestration engine.
