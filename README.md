@@ -22,7 +22,25 @@ Agents call:
   :8001  crawler-api   → crawl4ai        (web search + scraping)
   :8002  ppt-api       → ppt-master      (PPTX generation)
   :8003  graphrag-api  → Microsoft GraphRAG (knowledge graph research)
-  :8005  presenton-api → Presenton FastAPI (styled presentations)
+  :8005  presenton-api → Presenton FastAPI (styled presentations)presenton_report failed: Error: Presenton API 503: {"detail":"Presenton is not running at http://127.0.0.1:7860. Start it: cd presenton/servers/fastapi && python server.py --port 7860"}
+  
+      at PresentonAgent.execute (src/lib/agents/presenton_agent.ts:30:13)
+  
+      at async Object.start (src/app/api/orchestrator/route.ts:191:25)
+  
+    28 |     if (!res.ok) {
+  
+    29 |       const err = await res.text()
+  
+  > 30 |       throw new Error(`Presenton API ${res.status}: ${err}`)
+  
+       |             ^
+  
+    31 |     }
+  
+    32 |
+  
+    33 |     const data = await res
   :8006  image-api     → ComfyUI          (image generation)
   :3001  searach       → Perplexica fork  (deep web research)
 
