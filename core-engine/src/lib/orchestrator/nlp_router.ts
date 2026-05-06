@@ -30,14 +30,18 @@ const CAPABILITY_WORDS = ['what can you do', 'what do you do', 'help me', 'how d
 
 // Complex intent signals — these always go to the planner
 const COMPLEX_SIGNALS = [
-  /\b(search|find|look up|research|analyze|analyse)\b/i,
-  /\b(create|make|build|generate|write|draft)\b/i,
-  /\b(ppt|presentation|slides|powerpoint)\b/i,
-  /\b(image|picture|photo|draw|visualize)\b/i,
-  /\b(report|document|summary|summarize)\b/i,
-  /\b(latest|news|current|today|2025|2024)\b/i,
-  /\b(how to|explain|what is|define|difference between)\b/i,
-  /\b(compare|versus|vs|pros and cons)\b/i,
+  /\b(search|find|look up|research|analyze|analyse|investigate)\b/i,
+  /\b(create|make|build|generate|write|draft|produce)\b/i,
+  /\b(ppt|presentation|slides|powerpoint|deck)\b/i,
+  /\b(image|picture|photo|draw|visualize|illustration)\b/i,
+  /\b(report|document|summary|summarize|overview)\b/i,
+  /\b(latest|news|current|today|2025|2024|2023|recent)\b/i,
+  /\b(how to|explain|what is|what are|define|difference between|tell me about)\b/i,
+  /\b(compare|versus|vs|pros and cons|advantages|disadvantages)\b/i,
+  /\b(deep|comprehensive|detailed|thorough|in-depth)\b/i,
+  /\b(history|origin|background|cause|effect|impact|result)\b/i,
+  /\b(best|top|list|examples|types|kinds|categories)\b/i,
+  /\b(why|when|where|who|which|how)\b/i,
 ]
 
 export function classifyInput(query: string): InputClass {
@@ -47,7 +51,7 @@ export function classifyInput(query: string): InputClass {
   if (COMPLEX_SIGNALS.some(r => r.test(q))) return 'complex'
 
   // Long queries are almost always complex
-  if (q.split(' ').length > 8) return 'complex'
+  if (q.split(' ').length > 5) return 'complex'
 
   // Greeting check
   if (GREETING_WORDS.some(w => q === w || q.startsWith(w + ' ') || q.endsWith(' ' + w))) {

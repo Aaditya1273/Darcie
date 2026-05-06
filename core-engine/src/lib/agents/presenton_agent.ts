@@ -1,14 +1,13 @@
 /**
- * PresentonAgent — calls Presenton bridge (port 8005)
- * Presenton generates fully styled AI presentations via its own FastAPI server.
+ * PresentonAgent — calls self-contained Groq+python-pptx bridge (port 8005)
+ * Generates real PPTX files. No external Presenton service needed.
  */
 
 const PRESENTON_BRIDGE_URL = process.env.PRESENTON_BRIDGE_URL || 'http://127.0.0.1:8005'
-const PRESENTON_APP_URL = process.env.PRESENTON_URL || 'http://127.0.0.1:7860'
 
 export class PresentonAgent {
-  async execute(topic: string, context: string = ''): Promise<string> {
-    console.log(`[PresentonAgent] Generating report: ${topic}`)
+  async execute(topic: string, context = ''): Promise<string> {
+    console.log(`[PresentonAgent] Generating presentation: ${topic}`)
 
     const res = await fetch(`${PRESENTON_BRIDGE_URL}/generate-report`, {
       method: 'POST',
@@ -17,12 +16,10 @@ export class PresentonAgent {
         topic,
         context,
         n_slides: 8,
-        template: 'default',
-        language: 'English',
+        template: 'professional',
         tone: 'professional',
-        web_search: false,
       }),
-      signal: AbortSignal.timeout(300_000), // 5 min
+      signal: AbortSignal.timeout(120_000),
     })
 
     if (!res.ok) {
@@ -31,13 +28,13 @@ export class PresentonAgent {
     }
 
     const data = await res.json()
-    const viewUrl = `${PRESENTON_APP_URL}/presentation/${data.presentation_id}`
+    const downloadUrl = `http://localhost:8005${data.download_url}`
 
     return (
-      `### 📑 Professional Presentation Ready\n\n` +
+      `### Presentation Ready\n\n` +
       `**Title:** ${data.title}\n` +
       `**Slides:** ${data.slide_count}\n\n` +
-      `[🔗 View Presentation](${viewUrl})`
+      `[Download PPTX](${downloadUrl})`
     )
   }
 }

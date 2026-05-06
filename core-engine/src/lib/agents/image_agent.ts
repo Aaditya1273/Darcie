@@ -1,27 +1,25 @@
 /**
- * ImageAgent — calls ComfyUI bridge (port 8006)
- * ComfyUI runs the actual image generation via its workflow engine.
- * The bridge POSTs a workflow to ComfyUI's /prompt and polls for the result.
+ * ImageAgent — multi-provider image generation
+ * Priority: ComfyUI (local GPU) → Pollinations.ai (free, no key)
  */
 
 const IMAGE_URL = process.env.IMAGE_URL || 'http://127.0.0.1:8006'
-const COMFYUI_URL = process.env.COMFYUI_URL || 'http://127.0.0.1:8188'
 
 export class ImageAgent {
   async execute(prompt: string): Promise<string> {
-    console.log(`[ImageAgent] Generating image: ${prompt}`)
+    console.log(`[ImageAgent] Generating: ${prompt}`)
 
     const res = await fetch(`${IMAGE_URL}/generate-image`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt,
-        negative_prompt: 'blurry, low quality, watermark, text, deformed',
+        negative_prompt: 'blurry, low quality, watermark, text, deformed, ugly',
         width: 512,
         height: 512,
         steps: 20,
       }),
-      signal: AbortSignal.timeout(180_000), // 3 min
+      signal: AbortSignal.timeout(120_000),
     })
 
     if (!res.ok) {
@@ -30,14 +28,20 @@ export class ImageAgent {
     }
 
     const data = await res.json()
-    // image_url is a ComfyUI /view?filename=... URL — proxy it through our app
     const imageUrl = data.image_url
+    const provider = data.provider || 'unknown'
+
+    // For ComfyUI proxy URLs, prefix with the bridge URL
+    const displayUrl = imageUrl.startsWith('/proxy-comfyui')
+      ? `http://localhost:8006${imageUrl}`
+      : imageUrl
 
     return (
-      `### 🎨 Generated Image\n\n` +
-      `**Prompt:** ${prompt}\n\n` +
-      `![Generated Image](${imageUrl})\n\n` +
-      `[🔗 Open Full Size](${imageUrl})`
+      `### Generated Image\n\n` +
+      `**Prompt:** ${prompt}\n` +
+      `**Provider:** ${provider}\n\n` +
+      `![Generated Image](${displayUrl})\n\n` +
+      `[Open full size](${displayUrl})`
     )
   }
 }

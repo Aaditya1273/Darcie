@@ -1,11 +1,9 @@
 /**
- * Synthesizer — combines all agent results into a final response
+ * Synthesizer — turns agent results into a real AI explanation
  *
- * Uses generateText (chat completions) — works on all providers.
- *
- * Primary:  Groq Llama 3.3 70B  (fast, free)
- * Fallback: Gemini 2.0 Flash
- * Final:    GLM-4 Flash (Zhipu, free)
+ * The key insight: the synthesizer must ACT LIKE AN EXPERT ANALYST,
+ * not just reformat what agents returned. It should explain, connect
+ * ideas, add context, and give the user genuine understanding.
  */
 
 import { generateText } from 'ai'
@@ -21,33 +19,57 @@ const glm = createOpenAI({
   apiKey: process.env.GLM_API_KEY,
 })
 
-const SYSTEM = `You are the Output Synthesizer for Darcie AI.
-Combine the raw agent results into a single clean professional response.
+const SYSTEM = `You are Darcie AI — an expert analyst and research assistant.
 
-Rules:
-- Only use information from the provided results. Never hallucinate.
-- If a result contains a download link or image URL, show it as a markdown link/image.
-- Use clean markdown: ## headers, bullet points, **bold** for key terms.
-- Merge overlapping results — don't repeat.
-- If an agent failed, acknowledge it briefly and move on.
-- Be concise and useful. No filler.`
+Your job is to synthesize information from multiple sources into a comprehensive, insightful response that genuinely helps the user understand the topic.
+
+CRITICAL RULES:
+1. EXPLAIN, don't just list. Give the user real understanding, not just facts.
+2. NEVER output raw links as the main content. Links are only for references at the end.
+3. Use the provided research as your knowledge base, but write like an expert explaining to a colleague.
+4. Structure your response with clear sections using ## headers.
+5. Include specific facts, numbers, and examples from the research.
+6. If research is available, synthesize it into coherent paragraphs — don't just bullet-point everything.
+7. End with a "Key Takeaways" section summarizing the most important points.
+8. If a file was generated (PPT, image), highlight the download link prominently.
+9. Minimum 150 words for any research query. Maximum 600 words.
+10. Write in a clear, confident, expert tone — like a knowledgeable friend explaining something important.`
 
 export class Synthesizer {
   async synthesize(query: string, results: string[]): Promise<string> {
-    const combined = results
-      .map((r, i) => `--- Result ${i + 1} ---\n${r}`)
+    // Filter out empty/failed results
+    const validResults = results.filter(r => r && r.trim().length > 20)
+
+    if (validResults.length === 0) {
+      return await this._directAnswer(query)
+    }
+
+    const combined = validResults
+      .map((r, i) => `=== Research Source ${i + 1} ===\n${r}`)
       .join('\n\n')
 
-    const prompt = `User asked: "${query}"\n\nAgent Results:\n${combined}\n\nWrite the final response:`
+    const prompt = `User's question: "${query}"
 
-    // Tier 1: Groq
+Research gathered from multiple sources:
+${combined}
+
+Now write a comprehensive, expert response that:
+- Explains the topic clearly and thoroughly
+- Uses the research facts but presents them as coherent explanation
+- Does NOT just list links — explain what the research found
+- Includes specific data points and examples
+- Ends with Key Takeaways
+
+Response:`
+
+    // Tier 1: Groq (fast, free)
     try {
       const { text } = await generateText({
         model: groq.chat('llama-3.3-70b-versatile'),
         system: SYSTEM,
         prompt,
       })
-      return text
+      if (text && text.length > 50) return text
     } catch (e) {
       console.warn('[Synthesizer] Groq failed:', (e as Error).message?.slice(0, 80))
     }
@@ -61,24 +83,51 @@ export class Synthesizer {
         system: SYSTEM,
         prompt,
       })
-      return text
+      if (text && text.length > 50) return text
     } catch (e) {
       console.warn('[Synthesizer] Gemini failed:', (e as Error).message?.slice(0, 80))
     }
 
-    // Tier 3: GLM-4 Flash (Zhipu, free)
+    // Tier 3: GLM-4
     try {
       const { text } = await generateText({
         model: glm.chat('glm-4-flash'),
         system: SYSTEM,
         prompt,
       })
-      return text
+      if (text && text.length > 50) return text
     } catch (e) {
       console.warn('[Synthesizer] GLM failed:', (e as Error).message?.slice(0, 80))
     }
 
-    // Hard fallback — return raw results if all LLMs fail
-    return results.join('\n\n---\n\n')
+    // Hard fallback: direct Groq answer ignoring failed research
+    return await this._directAnswer(query)
+  }
+
+  private async _directAnswer(query: string): Promise<string> {
+    const GROQ_API_KEY = process.env.GROQ_API_KEY
+    if (!GROQ_API_KEY) return `I couldn't find information about "${query}". Please try again.`
+
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [
+            { role: 'system', content: SYSTEM },
+            { role: 'user', content: `Answer this question thoroughly: ${query}` },
+          ],
+          temperature: 0.5,
+          max_tokens: 800,
+        }),
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (!res.ok) throw new Error(`Groq ${res.status}`)
+      const data = await res.json()
+      return data.choices[0].message.content
+    } catch {
+      return `I encountered an issue processing your request about "${query}". Please try again.`
+    }
   }
 }

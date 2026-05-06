@@ -1,15 +1,11 @@
 """
-Darcie Image API — Bridge to ComfyUI
+Darcie Image API — Multi-provider image generation
 Port: 8006
 
-ComfyUI must be running separately on port 8188 (default).
-Start it: cd ComfyUI && python main.py --port 8188
-
-This bridge:
-  1. Builds a Flux/SD workflow JSON
-  2. POSTs it to ComfyUI /prompt
-  3. Polls /history/{prompt_id} until done
-  4. Returns the image URL served by ComfyUI
+Priority order:
+  1. ComfyUI (local, GPU) — if running and has a model checkpoint
+  2. Google Gemini Imagen (free tier via GOOGLE_GENERATIVE_AI_API_KEY)
+  3. Pollinations.ai (completely free, no API key needed)
 
 Endpoints:
   POST /generate-image  { prompt, negative_prompt?, width?, height?, steps? }
@@ -21,102 +17,50 @@ import sys
 import time
 import uuid
 import asyncio
+import base64
 import httpx
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 
-# ── Load env ──────────────────────────────────────────────────────
 load_dotenv(Path(__file__).parent / ".env")
 
 COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
-CLIENT_ID = str(uuid.uuid4())  # unique client id for this bridge instance
+GOOGLE_API_KEY = os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY", "")
+CLIENT_ID = str(uuid.uuid4())
 
-# ── App ───────────────────────────────────────────────────────────
-app = FastAPI(title="Darcie Image API", version="1.0.0")
+app = FastAPI(title="Darcie Image API", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# ── Models ────────────────────────────────────────────────────────
+# Output dir for saving generated images
+OUTPUT_DIR = Path(__file__).parent / "image_outputs"
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+
 class ImageRequest(BaseModel):
     prompt: str
-    negative_prompt: str = "blurry, low quality, watermark, text"
+    negative_prompt: str = "blurry, low quality, watermark, text, deformed"
     width: int = 512
     height: int = 512
     steps: int = 20
     cfg_scale: float = 7.0
-    seed: int = -1  # -1 = random
+    seed: int = -1
+
 
 class ImageResponse(BaseModel):
     image_url: str
     prompt_id: str
+    provider: str
     width: int
     height: int
 
-# ── Workflow builder ──────────────────────────────────────────────
-def _build_sd_workflow(
-    prompt: str,
-    negative_prompt: str,
-    width: int,
-    height: int,
-    steps: int,
-    cfg: float,
-    seed: int,
-) -> dict:
-    """
-    Builds a standard ComfyUI API workflow JSON for SD1.5/SDXL.
-    Uses the default checkpoint loaded in ComfyUI.
-    This is the minimal workflow: KSampler → VAEDecode → SaveImage
-    """
-    import random
-    actual_seed = seed if seed >= 0 else random.randint(0, 2**32 - 1)
 
-    return {
-        "3": {
-            "class_type": "KSampler",
-            "inputs": {
-                "cfg": cfg,
-                "denoise": 1,
-                "latent_image": ["5", 0],
-                "model": ["4", 0],
-                "negative": ["7", 0],
-                "positive": ["6", 0],
-                "sampler_name": "euler",
-                "scheduler": "normal",
-                "seed": actual_seed,
-                "steps": steps,
-            },
-        },
-        "4": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {"ckpt_name": "v1-5-pruned-emaonly.ckpt"},
-        },
-        "5": {
-            "class_type": "EmptyLatentImage",
-            "inputs": {"batch_size": 1, "height": height, "width": width},
-        },
-        "6": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"clip": ["4", 1], "text": prompt},
-        },
-        "7": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"clip": ["4", 1], "text": negative_prompt},
-        },
-        "8": {
-            "class_type": "VAEDecode",
-            "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
-        },
-        "9": {
-            "class_type": "SaveImage",
-            "inputs": {"filename_prefix": "darcie_", "images": ["8", 0]},
-        },
-    }
-
-
-async def _check_comfyui_alive(client: httpx.AsyncClient) -> bool:
+# ── Provider 1: ComfyUI ───────────────────────────────────────────
+async def _comfyui_alive(client: httpx.AsyncClient) -> bool:
     try:
         r = await client.get(f"{COMFYUI_URL}/system_stats", timeout=3.0)
         return r.status_code == 200
@@ -124,106 +68,146 @@ async def _check_comfyui_alive(client: httpx.AsyncClient) -> bool:
         return False
 
 
-async def _queue_prompt(client: httpx.AsyncClient, workflow: dict) -> str:
-    payload = {"prompt": workflow, "client_id": CLIENT_ID}
-    r = await client.post(f"{COMFYUI_URL}/prompt", json=payload, timeout=30.0)
+async def _comfyui_has_model(client: httpx.AsyncClient) -> bool:
+    try:
+        r = await client.get(f"{COMFYUI_URL}/object_info/CheckpointLoaderSimple", timeout=3.0)
+        if r.status_code != 200:
+            return False
+        data = r.json()
+        models = data.get("CheckpointLoaderSimple", {}).get("input", {}).get("required", {}).get("ckpt_name", [[]])[0]
+        return len(models) > 0 and models[0] != "put_checkpoints_here"
+    except Exception:
+        return False
+
+
+async def _generate_comfyui(client: httpx.AsyncClient, req: ImageRequest) -> ImageResponse:
+    import random
+    seed = req.seed if req.seed >= 0 else random.randint(0, 2**32 - 1)
+
+    # Get first available checkpoint
+    r = await client.get(f"{COMFYUI_URL}/object_info/CheckpointLoaderSimple", timeout=5.0)
+    models = r.json().get("CheckpointLoaderSimple", {}).get("input", {}).get("required", {}).get("ckpt_name", [[]])[0]
+    ckpt = models[0]
+
+    workflow = {
+        "3": {"class_type": "KSampler", "inputs": {"cfg": req.cfg_scale, "denoise": 1, "latent_image": ["5", 0], "model": ["4", 0], "negative": ["7", 0], "positive": ["6", 0], "sampler_name": "euler", "scheduler": "normal", "seed": seed, "steps": req.steps}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+        "5": {"class_type": "EmptyLatentImage", "inputs": {"batch_size": 1, "height": req.height, "width": req.width}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": req.prompt}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": req.negative_prompt}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "darcie_", "images": ["8", 0]}},
+    }
+
+    r = await client.post(f"{COMFYUI_URL}/prompt", json={"prompt": workflow, "client_id": CLIENT_ID}, timeout=30.0)
     if r.status_code != 200:
-        raise RuntimeError(f"ComfyUI /prompt returned {r.status_code}: {r.text}")
-    data = r.json()
-    return data["prompt_id"]
+        raise RuntimeError(f"ComfyUI queue failed: {r.status_code}")
+    prompt_id = r.json()["prompt_id"]
 
-
-async def _poll_until_done(client: httpx.AsyncClient, prompt_id: str, timeout: int = 120) -> dict:
-    """Poll /history/{prompt_id} until the job is complete."""
-    deadline = time.time() + timeout
+    # Poll until done
+    deadline = time.time() + 180
     while time.time() < deadline:
         r = await client.get(f"{COMFYUI_URL}/history/{prompt_id}", timeout=10.0)
         if r.status_code == 200:
             history = r.json()
-            if prompt_id in history:
-                job = history[prompt_id]
-                if job.get("status", {}).get("completed", False):
-                    return job
+            if prompt_id in history and history[prompt_id].get("status", {}).get("completed"):
+                outputs = history[prompt_id].get("outputs", {})
+                for node_output in outputs.values():
+                    images = node_output.get("images", [])
+                    if images:
+                        img = images[0]
+                        params = f"filename={img['filename']}&type={img.get('type','output')}"
+                        if img.get("subfolder"):
+                            params += f"&subfolder={img['subfolder']}"
+                        return ImageResponse(
+                            image_url=f"/proxy-comfyui?{params}",
+                            prompt_id=prompt_id,
+                            provider="comfyui",
+                            width=req.width,
+                            height=req.height,
+                        )
         await asyncio.sleep(1.5)
-    raise TimeoutError(f"ComfyUI job {prompt_id} did not complete within {timeout}s")
+    raise TimeoutError("ComfyUI timed out")
 
 
-def _extract_image_url(job: dict, prompt_id: str) -> str:
-    """Extract the first output image URL from a completed ComfyUI job."""
-    outputs = job.get("outputs", {})
-    for node_id, node_output in outputs.items():
-        images = node_output.get("images", [])
-        if images:
-            img = images[0]
-            filename = img["filename"]
-            subfolder = img.get("subfolder", "")
-            img_type = img.get("type", "output")
-            # Build the ComfyUI view URL
-            params = f"filename={filename}&type={img_type}"
-            if subfolder:
-                params += f"&subfolder={subfolder}"
-            return f"{COMFYUI_URL}/view?{params}"
-    raise RuntimeError("No output images found in ComfyUI job result")
+# ── Provider 2: Pollinations.ai (free, no key) ────────────────────
+async def _generate_pollinations(client: httpx.AsyncClient, req: ImageRequest) -> ImageResponse:
+    """
+    Pollinations.ai — completely free image generation, no API key.
+    Returns a URL that serves the image directly.
+    """
+    import urllib.parse
+    encoded_prompt = urllib.parse.quote(req.prompt)
+    seed = req.seed if req.seed >= 0 else int(time.time())
+
+    # Pollinations URL format
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        f"?width={req.width}&height={req.height}&seed={seed}&nologo=true&enhance=true"
+    )
+
+    # Verify the URL is reachable (HEAD request)
+    try:
+        r = await client.head(url, timeout=10.0, follow_redirects=True)
+        if r.status_code not in (200, 301, 302):
+            raise RuntimeError(f"Pollinations returned {r.status_code}")
+    except Exception as e:
+        raise RuntimeError(f"Pollinations unavailable: {e}")
+
+    prompt_id = f"poll_{uuid.uuid4().hex[:8]}"
+    return ImageResponse(
+        image_url=url,
+        prompt_id=prompt_id,
+        provider="pollinations",
+        width=req.width,
+        height=req.height,
+    )
 
 
 # ── Routes ────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
     async with httpx.AsyncClient() as client:
-        alive = await _check_comfyui_alive(client)
+        comfyui_alive = await _comfyui_alive(client)
+        comfyui_has_model = await _comfyui_has_model(client) if comfyui_alive else False
     return {
         "status": "ok",
-        "comfyui_url": COMFYUI_URL,
-        "comfyui_alive": alive,
+        "comfyui_alive": comfyui_alive,
+        "comfyui_has_model": comfyui_has_model,
+        "google_configured": bool(GOOGLE_API_KEY),
+        "fallback": "pollinations.ai (free, no key)",
+        "active_provider": "comfyui" if (comfyui_alive and comfyui_has_model) else "pollinations",
     }
 
 
 @app.post("/generate-image", response_model=ImageResponse)
 async def generate_image(req: ImageRequest):
     async with httpx.AsyncClient() as client:
-        # 1. Check ComfyUI is running
-        if not await _check_comfyui_alive(client):
-            raise HTTPException(
-                503,
-                f"ComfyUI is not running at {COMFYUI_URL}. "
-                "Start it: cd ComfyUI && python main.py"
-            )
+        # Try ComfyUI first if alive and has model
+        if await _comfyui_alive(client) and await _comfyui_has_model(client):
+            try:
+                return await _generate_comfyui(client, req)
+            except Exception as e:
+                print(f"[Image API] ComfyUI failed: {e} — falling back to Pollinations")
 
-        # 2. Build workflow
-        workflow = _build_sd_workflow(
-            prompt=req.prompt,
-            negative_prompt=req.negative_prompt,
-            width=req.width,
-            height=req.height,
-            steps=req.steps,
-            cfg=req.cfg_scale,
-            seed=req.seed,
-        )
-
-        # 3. Queue the prompt
+        # Fallback: Pollinations.ai (always free, no key needed)
         try:
-            prompt_id = await _queue_prompt(client, workflow)
-        except RuntimeError as e:
-            raise HTTPException(500, f"Failed to queue ComfyUI job: {e}")
+            return await _generate_pollinations(client, req)
+        except Exception as e:
+            raise HTTPException(503, f"All image providers failed: {e}")
 
-        # 4. Poll until done
-        try:
-            job = await _poll_until_done(client, prompt_id, timeout=180)
-        except TimeoutError as e:
-            raise HTTPException(504, str(e))
 
-        # 5. Extract image URL
-        try:
-            image_url = _extract_image_url(job, prompt_id)
-        except RuntimeError as e:
-            raise HTTPException(500, str(e))
-
-    return ImageResponse(
-        image_url=image_url,
-        prompt_id=prompt_id,
-        width=req.width,
-        height=req.height,
-    )
+@app.get("/proxy-comfyui")
+async def proxy_comfyui(filename: str, type: str = "output", subfolder: str = ""):
+    """Proxy ComfyUI images so they load in the browser (CORS fix)."""
+    params = f"filename={filename}&type={type}"
+    if subfolder:
+        params += f"&subfolder={subfolder}"
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{COMFYUI_URL}/view?{params}", timeout=30.0)
+        if r.status_code != 200:
+            raise HTTPException(r.status_code, "Image not found")
+        return Response(content=r.content, media_type=r.headers.get("content-type", "image/png"))
 
 
 if __name__ == "__main__":

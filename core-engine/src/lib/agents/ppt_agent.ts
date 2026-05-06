@@ -1,19 +1,26 @@
 /**
- * PPTAgent — calls ppt-master bridge (port 8002)
- * Passes search context if available so the LLM uses real data.
+ * PPTAgent — generates real PPTX via self-contained Groq+python-pptx bridge
+ * Uses the same presenton_api.py engine (port 8005) which is proven working.
+ * Passes context from search results so slides have real data.
  */
 
-const PPT_URL = process.env.PPT_URL || 'http://127.0.0.1:8002'
+const PPT_URL = process.env.PRESENTON_BRIDGE_URL || 'http://127.0.0.1:8005'
 
 export class PPTAgent {
-  async execute(topic: string, context: string = '', slideCount = 8): Promise<string> {
+  async execute(topic: string, context = '', slideCount = 8): Promise<string> {
     console.log(`[PPTAgent] Generating PPT: ${topic}`)
 
     const res = await fetch(`${PPT_URL}/generate-ppt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic, slide_count: slideCount, context }),
-      signal: AbortSignal.timeout(300_000), // 5 min — pipeline takes time
+      body: JSON.stringify({
+        topic,
+        context,
+        n_slides: slideCount,
+        template: 'professional',
+        tone: 'professional',
+      }),
+      signal: AbortSignal.timeout(120_000),
     })
 
     if (!res.ok) {
@@ -22,14 +29,13 @@ export class PPTAgent {
     }
 
     const data = await res.json()
-    const downloadUrl = `http://localhost:8002${data.download_url}`
+    const downloadUrl = `http://localhost:8005${data.download_url}`
 
     return (
-      `### 📊 Presentation Ready\n\n` +
-      `**Topic:** ${topic}\n` +
-      `**Slides:** ${data.slide_count}\n` +
-      `**Project:** ${data.project_name}\n\n` +
-      `[⬇️ Download PPTX](${downloadUrl})`
+      `### Presentation Ready\n\n` +
+      `**Title:** ${data.title}\n` +
+      `**Slides:** ${data.slide_count}\n\n` +
+      `[Download PPTX](${downloadUrl})`
     )
   }
 }

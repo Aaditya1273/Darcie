@@ -1,97 +1,90 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
 :root {
-  /* Darcie Design System */
-  
-  /* Typography - Strict Apple/Stripe Standard */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  
-  /* Color Palette - Minimalist Dark Mode */
-  --bg-primary: #0a0a0a;
-  --bg-secondary: #121212;
-  --bg-tertiary: #1e1e1e;
-  
-  --text-primary: #ffffff;
-  --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
-  
-  --accent-color: #ffffff; /* Stark white accent for high contrast CTA */
-  --accent-hover: #e4e4e7;
-  
-  --border-color: #27272a;
-  --border-subtle: #1f1f22;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 
-  /* 8px Spacing Grid */
-  --spacing-1: 8px;
-  --spacing-2: 16px;
-  --spacing-3: 24px;
-  --spacing-4: 32px;
-  --spacing-5: 40px;
-  --spacing-6: 48px;
-  --spacing-8: 64px;
-  
-  /* Layout constraints */
-  --max-width-content: 800px;
-  --sidebar-width: 260px;
-  
-  /* Transitions - Fast (150ms-300ms) */
-  --transition-fast: 150ms ease;
-  --transition-normal: 250ms ease;
-  
-  /* Border Radius */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-full: 9999px;
+  /* ── Surfaces — warm, visible, not pitch black ── */
+  --bg:     #161616;
+  --bg-1:   #1c1c1c;
+  --bg-2:   #242424;
+  --bg-3:   #2c2c2c;
+  --bg-4:   #363636;
+
+  /* ── Borders — clearly visible ── */
+  --border:   #303030;
+  --border-2: #3e3e3e;
+  --border-3: #505050;
+
+  /* ── Text — high contrast ── */
+  --text-1: #f5f5f5;   /* near white — very readable */
+  --text-2: #c8c8c8;   /* secondary — clearly visible */
+  --text-3: #888888;   /* tertiary — readable */
+  --text-4: #555555;   /* muted */
+
+  /* ── Status ── */
+  --green:        #4ade80;
+  --green-bg:     #0d2018;
+  --green-border: #1e4030;
+  --red:          #f87171;
+  --red-bg:       #220d0d;
+  --red-border:   #4a1a1a;
+  --yellow:       #fbbf24;
+  --blue:         #60a5fa;
+
+  /* ── Capability card backgrounds — vivid, saturated ── */
+  --cap-search:   #1a3050;
+  --cap-research: #1e1850;
+  --cap-slides:   #3a1e18;
+  --cap-reports:  #183a20;
+  --cap-images:   #38183a;
+  --cap-video:    #3a3018;
+  --cap-chat:     #182038;
+  --cap-agents:   #242424;
+
+  /* ── Radius ── */
+  --r-sm:  4px;
+  --r-md:  8px;
+  --r-lg:  12px;
+  --r-xl:  16px;
+  --r-2xl: 20px;
+
+  /* ── Sidebar widths ── */
+  --sidebar-collapsed: 48px;
+  --sidebar-expanded:  260px;
+
+  /* ── Transition ── */
+  --t: 150ms ease;
+  --t-slow: 250ms ease;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { height: 100%; }
 
 body {
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
+  height: 100%;
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-h1, h2, h3, h4, h5, h6 {
-  font-weight: 600; /* Max 2 font weights: 400 and 600 */
-  line-height: 1.2;
-  letter-spacing: -0.02em;
-}
+a { color: inherit; text-decoration: none; }
+button { font-family: inherit; cursor: pointer; }
+input, textarea { font-family: inherit; }
 
-a {
-  color: inherit;
-  text-decoration: none;
-  transition: color var(--transition-fast);
-}
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-3); }
 
-button {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-family: inherit;
-  color: inherit;
-  transition: all var(--transition-fast);
-}
+::selection { background: rgba(96,165,250,0.25); }
 
-/* Base Utility Classes */
-.container {
-  max-width: var(--max-width-content);
-  margin: 0 auto;
-  padding: 0 var(--spacing-3);
-}
-
-/* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.animate-in {
-  animation: fadeIn var(--transition-normal) forwards;
-}
+@keyframes spin    { to { transform: rotate(360deg); } }
+@keyframes fadeUp  { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+@keyframes fadeIn  { from { opacity:0; } to { opacity:1; } }
+@keyframes pulse   { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+@keyframes slideIn { from { transform:translateX(-8px); opacity:0; } to { transform:translateX(0); opacity:1; } }
